@@ -1,0 +1,49 @@
+[project]
+name = "dbnomics-data-browser"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "cachetools",
+    "dbnomics",
+    "fastapi",
+    "httpx",
+    "pandas",
+    "pydantic-settings",
+    "uvicorn",
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/tests/**" = ["S101"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers -m \"not live\""
+pythonpath = ["backend"]
+testpaths = ["backend/tests"]
+markers = [
+    "live: hits the DBnomics Web API (deselect with '-m \"not live\"')",
+]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+files = ["backend/app"]
+mypy_path = "backend"
+explicit_package_bases = true
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["cachetools.*", "dbnomics.*", "pandas.*"]
+ignore_missing_imports = true
+follow_untyped_imports = false

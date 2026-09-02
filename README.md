@@ -49,6 +49,14 @@ npm ci
 
 ## Run locally
 
+From the repository root, start both servers with:
+
+```bash
+./start.sh
+```
+
+Or run them manually in separate terminals.
+
 Start the API on port **8001** (from the repository root). Port 8000 is commonly
 occupied by other local services (e.g. Docker containers):
 

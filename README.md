@@ -49,10 +49,11 @@ npm ci
 
 ## Run locally
 
-Start the API (from the repository root):
+Start the API on port **8001** (from the repository root). Port 8000 is commonly
+occupied by other local services (e.g. Docker containers):
 
 ```bash
-.venv/bin/python -m uvicorn app.main:app --app-dir backend --reload
+.venv/bin/python -m uvicorn app.main:app --app-dir backend --reload --port 8001
 ```
 
 In another terminal, start the frontend from the repository root:
@@ -69,8 +70,9 @@ nvm use
 npm run dev
 ```
 
-Open `http://localhost:5173`. The API documentation is available at
-`http://localhost:8000/docs`.
+Open `http://localhost:5173`. In dev, the frontend proxies `/api` to the backend
+on port 8001, so CORS is not required. The API documentation is available at
+`http://localhost:8001/docs`.
 
 Set `VITE_API_BASE_URL` when the API is hosted elsewhere. Backend settings use
 the `DBNOMICS_BROWSER_` prefix; available limits and CORS defaults are defined in

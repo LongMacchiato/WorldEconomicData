@@ -24,16 +24,22 @@ import {
   getSeriesPage,
   previewQuery,
   saveBlob,
+  syncSeriesToAnalytics,
 } from './api'
-import type {
-  Dataset,
-  DatasetDetail,
-  DimensionSelections,
-  DownloadFormat,
-  Provider,
-  QueryPreview,
-  QueryRequest,
-  SeriesSummary,
+import { AnalyticsWorkbench } from './components/AnalyticsWorkbench'
+import { ConnectorBadge, ConnectorFilterBar } from './components/ConnectorFilterBar'
+import { MacroIntelligenceDashboard } from './components/MacroIntelligenceDashboard'
+import {
+  type Dataset,
+  type DatasetDetail,
+  type DimensionSelections,
+  type DownloadFormat,
+  type Provider,
+  type ProviderSourceFilter,
+  type QueryPreview,
+  type QueryRequest,
+  type SeriesSummary,
+  resolveProviderSourceType,
 } from './types'
 
 const PAGE_SIZE = 25
@@ -45,6 +51,7 @@ const BROWSER_STATE_STORAGE_KEY = 'dbnomics-browser-state'
 
 interface PersistedBrowserState {
   providerCode: string | null
+  providerSourceFilter: ProviderSourceFilter
   datasetCode: string | null
   dimensionSelections: DimensionSelections
   selectedSeriesCodes: string[]
@@ -54,6 +61,7 @@ interface PersistedBrowserState {
 
 const EMPTY_BROWSER_STATE: PersistedBrowserState = {
   providerCode: null,
+  providerSourceFilter: 'all',
   datasetCode: null,
   dimensionSelections: {},
   selectedSeriesCodes: [],
@@ -87,6 +95,9 @@ function App() {
   const [selectedProviderCode, setSelectedProviderCode] = useState<string | null>(
     initialBrowserState.providerCode,
   )
+  const [providerSourceFilter, setProviderSourceFilter] = useState<ProviderSourceFilter>(
+    initialBrowserState.providerSourceFilter ?? 'all',
+  )
   const [datasets, setDatasets] = useState<Dataset[]>([])
   const [selectedDatasetCode, setSelectedDatasetCode] = useState<string | null>(
     initialBrowserState.datasetCode,
@@ -116,22 +127,47 @@ function App() {
   const [isSeriesLoading, setIsSeriesLoading] = useState(false)
   const [isPreviewLoading, setIsPreviewLoading] = useState(false)
   const [downloadingFormat, setDownloadingFormat] = useState<DownloadFormat | null>(null)
+  const [activeTab, setActiveTab] = useState<'browser' | 'analytics' | 'macro'>('browser')
+  const [isSyncing, setIsSyncing] = useState(false)
+  const [syncMessage, setSyncMessage] = useState('')
+  const [analyticsRefreshKey, setAnalyticsRefreshKey] = useState(0)
   const previewControllerRef = useRef<AbortController | null>(null)
   const previewRequestIdRef = useRef(0)
   const downloadControllerRef = useRef<AbortController | null>(null)
   const downloadRequestIdRef = useRef(0)
 
   const selectedProvider = providers.find(({ code }) => code === selectedProviderCode)
+  const providerSourceCounts = useMemo<Record<ProviderSourceFilter, number>>(() => {
+    const counts: Record<ProviderSourceFilter, number> = {
+      all: 0,
+      sdmx: 0,
+      dbnomics: 0,
+      central_bank: 0,
+      financial: 0,
+    }
+    for (const provider of providers) {
+      counts.all += 1
+      const sourceType = resolveProviderSourceType(provider)
+      counts[sourceType] += 1
+    }
+    return counts
+  }, [providers])
+
   const filteredProviders = useMemo(() => {
     const normalizedSearch = providerSearch.trim().toLowerCase()
-    if (!normalizedSearch) return providers
-    return providers.filter(
-      (provider) =>
+    return providers.filter((provider) => {
+      const sourceType = resolveProviderSourceType(provider)
+      if (providerSourceFilter !== 'all' && sourceType !== providerSourceFilter) {
+        return false
+      }
+      if (!normalizedSearch) return true
+      return (
         provider.code.toLowerCase().includes(normalizedSearch) ||
         provider.name.toLowerCase().includes(normalizedSearch) ||
-        (provider.region?.toLowerCase().includes(normalizedSearch) ?? false),
-    )
-  }, [providerSearch, providers])
+        (provider.region?.toLowerCase().includes(normalizedSearch) ?? false)
+      )
+    })
+  }, [providerSearch, providerSourceFilter, providers])
   const selectedDataset = datasets.find(({ code }) => code === selectedDatasetCode)
 
   const queryRequest = useMemo<QueryRequest | null>(() => {
@@ -196,6 +232,7 @@ function App() {
       BROWSER_STATE_STORAGE_KEY,
       JSON.stringify({
         providerCode: selectedProviderCode,
+        providerSourceFilter,
         datasetCode: selectedDatasetCode,
         dimensionSelections,
         selectedSeriesCodes,
@@ -205,6 +242,7 @@ function App() {
     )
   }, [
     selectedProviderCode,
+    providerSourceFilter,
     selectedDatasetCode,
     dimensionSelections,
     selectedSeriesCodes,
@@ -484,501 +522,628 @@ function App() {
     setError('')
   }
 
+  async function syncToWarehouse(): Promise<void> {
+    if (!selectedProviderCode || !selectedDatasetCode || !selectedSeriesCodes.length) return
+    setIsSyncing(true)
+    setSyncMessage('')
+    setError('')
+    try {
+      const summary = await syncSeriesToAnalytics({
+        provider_code: selectedProviderCode,
+        dataset_code: selectedDatasetCode,
+        series_codes: selectedSeriesCodes,
+        start_period: startPeriod || null,
+        end_period: endPeriod || null,
+      })
+      setSyncMessage(
+        `Synced ${summary.series_count} series (${summary.observations_upserted.toLocaleString()} observations) to DuckDB.`,
+      )
+      setAnalyticsRefreshKey((k) => k + 1)
+    } catch (requestError) {
+      const message = getErrorMessage(requestError)
+      if (message) setError(message)
+    } finally {
+      setIsSyncing(false)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900 transition-colors dark:bg-zinc-950 dark:text-zinc-100">
       <header className="sticky top-0 z-50 border-b border-zinc-200/80 bg-white/90 backdrop-blur-xl dark:border-zinc-800 dark:bg-zinc-950/90">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6 lg:px-8">
           <div className="flex items-center gap-3">
             <div className="grid size-10 place-items-center rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-600/20">
               <Database size={21} aria-hidden="true" />
             </div>
             <div>
-              <p className="text-sm font-semibold tracking-tight">DBnomics Data Browser</p>
+              <p className="text-sm font-semibold tracking-tight">WorldEconomicData</p>
               <p className="hidden text-xs text-zinc-500 sm:block dark:text-zinc-400">
-                Discover, chart, and export economic time series
+                Global Macro, SDMX, DBnomics &amp; DuckDB Analytics Platform
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            className="icon-button"
-            aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
-            onClick={() =>
-              setTheme((currentTheme) => (currentTheme === 'light' ? 'dark' : 'light'))
-            }
-          >
-            {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
-          </button>
+          <div className="flex items-center gap-2">
+            <nav
+              aria-label="Workspace mode"
+              className="flex rounded-xl bg-zinc-100 p-1 dark:bg-zinc-900"
+            >
+              <button
+                type="button"
+                onClick={() => setActiveTab('browser')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                  activeTab === 'browser'
+                    ? 'bg-white text-blue-600 shadow-xs dark:bg-zinc-800 dark:text-blue-400'
+                    : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white'
+                }`}
+              >
+                Catalogue Browser
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('analytics')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                  activeTab === 'analytics'
+                    ? 'bg-white text-blue-600 shadow-xs dark:bg-zinc-800 dark:text-blue-400'
+                    : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white'
+                }`}
+              >
+                Analytics Database
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('macro')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                  activeTab === 'macro'
+                    ? 'bg-white text-blue-600 shadow-xs dark:bg-zinc-800 dark:text-blue-400'
+                    : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white'
+                }`}
+              >
+                Macro Intelligence
+              </button>
+            </nav>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
+              onClick={() =>
+                setTheme((currentTheme) => (currentTheme === 'light' ? 'dark' : 'light'))
+              }
+            >
+              {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
+            </button>
+          </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        <div className="mb-8">
-          <p className="mb-2 text-xs font-bold uppercase tracking-[0.2em] text-blue-600 dark:text-blue-400">
-            Data workspace
-          </p>
-          <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
-            Explore DBnomics series
-          </h1>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            Choose a provider and dataset, filter series, then preview charts or download
-            observations.
-          </p>
-        </div>
-
-        <nav aria-label="Query progress" className="mb-6 flex items-center gap-2 text-xs">
-          <Step
-            number="1"
-            label="Provider"
-            isActive={!selectedProviderCode}
-            isComplete={!!selectedProviderCode}
+        {activeTab === 'analytics' ? (
+          <AnalyticsWorkbench theme={theme} refreshTrigger={analyticsRefreshKey} />
+        ) : activeTab === 'macro' ? (
+          <MacroIntelligenceDashboard
+            theme={theme}
+            onSelectProviderInBrowser={(code) => {
+              const target = providers.find((p) => p.code === code)
+              if (
+                target &&
+                providerSourceFilter !== 'all' &&
+                resolveProviderSourceType(target) !== providerSourceFilter
+              ) {
+                setProviderSourceFilter('all')
+              }
+              selectProvider(code)
+              setActiveTab('browser')
+            }}
           />
-          <ChevronRight size={14} className="text-zinc-400" />
-          <Step
-            number="2"
-            label="Dataset"
-            isActive={!!selectedProviderCode && !selectedDatasetCode}
-            isComplete={!!selectedDatasetCode}
-          />
-          <ChevronRight size={14} className="text-zinc-400" />
-          <Step number="3" label="Series" isActive={!!selectedDatasetCode} isComplete={!!preview} />
-        </nav>
-
-        {error && (
-          <div role="alert" className="alert mb-6">
-            <AlertCircle className="mt-0.5 shrink-0 text-red-500" size={18} />
-            <span className="flex-1">{error}</span>
-            <button
-              type="button"
-              className="icon-button size-7"
-              onClick={() => setError('')}
-              aria-label="Dismiss error"
-            >
-              <X size={15} />
-            </button>
-          </div>
-        )}
-
-        <section aria-labelledby="provider-heading" className="panel mb-6">
-          <SectionHeading
-            number="01"
-            title="Choose a provider"
-            description="Select the organisation publishing the series you want."
-            id="provider-heading"
-          />
-          {isProvidersLoading ? (
-            <div
-              className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
-              aria-label="Loading providers"
-            >
-              {[1, 2, 3].map((item) => (
-                <div key={item} className="skeleton h-24" />
-              ))}
+        ) : (
+          <>
+            <div className="mb-8">
+              <p className="mb-2 text-xs font-bold uppercase tracking-[0.2em] text-blue-600 dark:text-blue-400">
+                Data workspace
+              </p>
+              <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+                Explore WorldEconomicData series
+              </h1>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-600 dark:text-zinc-400">
+                Choose a provider and dataset, filter series, then preview charts, download
+                observations, or sync directly to your DuckDB analytics database.
+              </p>
             </div>
-          ) : providers.length ? (
-            <div className="space-y-4">
-              <label className="relative block">
-                <span className="sr-only">Search providers</span>
-                <Search
-                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400"
-                  size={17}
-                />
-                <input
-                  type="search"
-                  value={providerSearch}
-                  onChange={(event) => setProviderSearch(event.target.value)}
-                  placeholder="Search by name or code…"
-                  className="input pl-10"
-                  aria-label="Search providers"
-                />
-              </label>
-              {filteredProviders.length ? (
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {filteredProviders.map((provider) => {
-                    const isSelected = provider.code === selectedProviderCode
-                    return (
-                      <button
-                        key={provider.code}
-                        type="button"
-                        className={`provider-card ${isSelected ? 'provider-card-selected' : ''}`}
-                        aria-pressed={isSelected}
-                        onClick={() => selectProvider(provider.code)}
-                      >
-                        <span className="min-w-0 space-y-1.5">
-                          <span className="block font-semibold">{provider.name}</span>
-                          <span className="mt-1 block truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
-                            {provider.code}
-                          </span>
-                          {provider.region && (
-                            <span className="block text-xs leading-5 text-zinc-600 dark:text-zinc-300">
-                              {provider.region}
-                            </span>
-                          )}
-                        </span>
-                        <span
-                          className={`selection-mark ${isSelected ? 'selection-mark-selected' : ''}`}
-                        >
-                          {isSelected ? <Check size={14} /> : <ChevronRight size={14} />}
-                        </span>
-                      </button>
-                    )
-                  })}
-                </div>
-              ) : (
-                <EmptyState message="No providers match your search." />
-              )}
-            </div>
-          ) : (
-            <EmptyState message="No providers are available." />
-          )}
-        </section>
 
-        <section
-          aria-labelledby="dataset-heading"
-          className={`panel mb-6 transition-opacity ${selectedProviderCode ? '' : 'pointer-events-none opacity-50'}`}
-        >
-          <SectionHeading
-            number="02"
-            title="Find a dataset"
-            description={
-              selectedProvider
-                ? `Browse datasets published by ${selectedProvider.name}.`
-                : 'Choose a provider to see its datasets.'
-            }
-            id="dataset-heading"
-          />
-          <label className="relative mb-4 block">
-            <span className="sr-only">Search datasets</span>
-            <Search
-              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400"
-              size={17}
-            />
-            <input
-              type="search"
-              value={search}
-              onChange={(event) => {
-                setSearch(event.target.value)
-                setError('')
-              }}
-              disabled={!selectedProviderCode}
-              placeholder="Search by name or code…"
-              className="input pl-10"
-            />
-          </label>
-          <div
-            className="relative z-20 max-h-72 space-y-2 overflow-y-auto rounded-xl"
-            data-testid="dataset-list"
-          >
-            {isDatasetsLoading ? (
-              [1, 2, 3].map((item) => <div key={item} className="skeleton h-16" />)
-            ) : !selectedProviderCode ? (
-              <EmptyState message="Select a provider to continue." />
-            ) : datasets.length ? (
-              datasets.map((dataset) => {
-                const isSelected = dataset.code === selectedDatasetCode
-                return (
-                  <button
-                    type="button"
-                    key={`${dataset.provider_code}:${dataset.code}`}
-                    aria-pressed={isSelected}
-                    className={`flow-row ${isSelected ? 'flow-row-selected' : ''}`}
-                    onClick={() => selectDataset(dataset.code)}
-                  >
-                    <span className="min-w-0 text-left">
-                      <span className="block truncate text-sm font-semibold">{dataset.name}</span>
-                      <span className="mt-1 block truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
-                        {dataset.code}
-                        {dataset.nb_series != null
-                          ? ` · ${dataset.nb_series.toLocaleString()} series`
-                          : ''}
-                      </span>
-                    </span>
-                    {isSelected ? (
-                      <Check className="shrink-0 text-blue-600" size={18} />
-                    ) : (
-                      <ChevronRight className="shrink-0 text-zinc-400" size={18} />
-                    )}
-                  </button>
-                )
-              })
-            ) : (
-              <EmptyState
-                message={search ? `No datasets match “${search}”.` : 'No datasets are available.'}
+            <nav aria-label="Query progress" className="mb-6 flex items-center gap-2 text-xs">
+              <Step
+                number="1"
+                label="Provider"
+                isActive={!selectedProviderCode}
+                isComplete={!!selectedProviderCode}
               />
-            )}
-          </div>
-        </section>
+              <ChevronRight size={14} className="text-zinc-400" />
+              <Step
+                number="2"
+                label="Dataset"
+                isActive={!!selectedProviderCode && !selectedDatasetCode}
+                isComplete={!!selectedDatasetCode}
+              />
+              <ChevronRight size={14} className="text-zinc-400" />
+              <Step
+                number="3"
+                label="Series"
+                isActive={!!selectedDatasetCode}
+                isComplete={!!preview}
+              />
+            </nav>
 
-        <section
-          aria-labelledby="series-heading"
-          className={`panel transition-opacity ${selectedDatasetCode ? '' : 'pointer-events-none opacity-50'}`}
-        >
-          <SectionHeading
-            number="03"
-            title="Select series"
-            description={
-              selectedDataset
-                ? `Filter and multi-select up to ${MAX_SELECTED_SERIES} series from ${selectedDataset.name}.`
-                : 'Choose a dataset to browse its series.'
-            }
-            id="series-heading"
-          />
-          {isDatasetDetailLoading ? (
-            <div className="space-y-4" aria-label="Loading dataset detail">
-              {[1, 2, 3].map((item) => (
-                <div key={item} className="skeleton h-24" />
-              ))}
-            </div>
-          ) : datasetDetail ? (
-            <>
-              {datasetDetail.dimensions.length > 0 && (
-                <div className="mb-5 grid gap-4 lg:grid-cols-2">
-                  {datasetDetail.dimensions.map((dimension) => (
-                    <fieldset key={dimension.code} className="dimension-card">
-                      <legend className="w-full px-1">
-                        <span className="flex items-center justify-between gap-3">
-                          <span className="text-sm font-semibold">{dimension.label}</span>
-                          <span className="font-mono text-[11px] text-zinc-500">
-                            {dimension.code}
-                          </span>
-                        </span>
-                      </legend>
-                      <div className="mt-3 max-h-40 space-y-1 overflow-y-auto pr-1">
-                        {dimension.values.map((value) => {
-                          const isSelected =
-                            dimensionSelections[dimension.code]?.includes(value.code) ?? false
-                          return (
-                            <label key={value.code} className="code-option">
-                              <input
-                                type="checkbox"
-                                checked={isSelected}
-                                onChange={() => toggleDimensionCode(dimension.code, value.code)}
-                                className="checkbox"
-                              />
-                              <span className="min-w-0 flex-1 truncate">{value.label}</span>
-                              <span className="font-mono text-[11px] text-zinc-500">
-                                {value.code}
-                              </span>
-                            </label>
-                          )
-                        })}
-                      </div>
-                    </fieldset>
+            {error && (
+              <div role="alert" className="alert mb-6">
+                <AlertCircle className="mt-0.5 shrink-0 text-red-500" size={18} />
+                <span className="flex-1">{error}</span>
+                <button
+                  type="button"
+                  className="icon-button size-7"
+                  onClick={() => setError('')}
+                  aria-label="Dismiss error"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            )}
+
+            <section aria-labelledby="provider-heading" className="panel mb-6">
+              <SectionHeading
+                number="01"
+                title="Choose a provider"
+                description="Select the organisation or direct data connector publishing the series you want."
+                id="provider-heading"
+              />
+              {isProvidersLoading ? (
+                <div
+                  className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
+                  aria-label="Loading providers"
+                >
+                  {[1, 2, 3].map((item) => (
+                    <div key={item} className="skeleton h-24" />
                   ))}
                 </div>
+              ) : providers.length ? (
+                <div className="space-y-4">
+                  <ConnectorFilterBar
+                    activeFilter={providerSourceFilter}
+                    counts={providerSourceCounts}
+                    onSelectFilter={setProviderSourceFilter}
+                    ariaLabel="Filter providers by connector"
+                  />
+                  <label className="relative block">
+                    <span className="sr-only">Search providers</span>
+                    <Search
+                      className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400"
+                      size={17}
+                    />
+                    <input
+                      type="search"
+                      value={providerSearch}
+                      onChange={(event) => setProviderSearch(event.target.value)}
+                      placeholder="Search by name, code, or region…"
+                      className="input pl-10"
+                      aria-label="Search providers"
+                    />
+                  </label>
+                  {filteredProviders.length ? (
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      {filteredProviders.map((provider) => {
+                        const isSelected = provider.code === selectedProviderCode
+                        const sourceType = resolveProviderSourceType(provider)
+                        return (
+                          <button
+                            key={provider.code}
+                            type="button"
+                            className={`provider-card ${isSelected ? 'provider-card-selected' : ''}`}
+                            aria-pressed={isSelected}
+                            onClick={() => selectProvider(provider.code)}
+                          >
+                            <span className="min-w-0 space-y-1.5">
+                              <span className="block font-semibold">{provider.name}</span>
+                              <span className="mt-1 flex flex-wrap items-center gap-1.5">
+                                <span className="truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
+                                  {provider.code}
+                                </span>
+                                <ConnectorBadge sourceType={sourceType} />
+                              </span>
+                              {provider.region && (
+                                <span className="block text-xs leading-5 text-zinc-600 dark:text-zinc-300">
+                                  {provider.region}
+                                </span>
+                              )}
+                            </span>
+                            <span
+                              className={`selection-mark ${isSelected ? 'selection-mark-selected' : ''}`}
+                            >
+                              {isSelected ? <Check size={14} /> : <ChevronRight size={14} />}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <EmptyState message="No providers match your current connector filter or search." />
+                  )}
+                </div>
+              ) : (
+                <EmptyState message="No providers are available." />
               )}
+            </section>
 
+            <section
+              aria-labelledby="dataset-heading"
+              className={`panel mb-6 transition-opacity ${selectedProviderCode ? '' : 'pointer-events-none opacity-50'}`}
+            >
+              <SectionHeading
+                number="02"
+                title="Find a dataset"
+                description={
+                  selectedProvider
+                    ? `Browse datasets published by ${selectedProvider.name}.`
+                    : 'Choose a provider to see its datasets.'
+                }
+                id="dataset-heading"
+              />
               <label className="relative mb-4 block">
-                <span className="sr-only">Search series</span>
+                <span className="sr-only">Search datasets</span>
                 <Search
                   className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400"
                   size={17}
                 />
                 <input
                   type="search"
-                  value={seriesSearch}
+                  value={search}
                   onChange={(event) => {
-                    setSeriesSearch(event.target.value)
+                    setSearch(event.target.value)
                     setError('')
                   }}
-                  placeholder="Search series by name or code…"
+                  disabled={!selectedProviderCode}
+                  placeholder="Search by name or code…"
                   className="input pl-10"
                 />
               </label>
-
               <div
-                className="relative z-20 mb-5 max-h-72 space-y-2 overflow-y-auto rounded-xl"
-                data-testid="series-list"
+                className="relative z-20 max-h-72 space-y-2 overflow-y-auto rounded-xl"
+                data-testid="dataset-list"
               >
-                {isSeriesLoading ? (
-                  [1, 2, 3].map((item) => <div key={item} className="skeleton h-14" />)
-                ) : seriesItems.length ? (
-                  seriesItems.map((series) => {
-                    const isSelected = selectedSeriesCodes.includes(series.series_code)
+                {isDatasetsLoading ? (
+                  [1, 2, 3].map((item) => <div key={item} className="skeleton h-16" />)
+                ) : !selectedProviderCode ? (
+                  <EmptyState message="Select a provider to continue." />
+                ) : datasets.length ? (
+                  datasets.map((dataset) => {
+                    const isSelected = dataset.code === selectedDatasetCode
                     return (
-                      <label
-                        key={series.series_code}
-                        className={`flow-row cursor-pointer ${isSelected ? 'flow-row-selected' : ''}`}
+                      <button
+                        type="button"
+                        key={`${dataset.provider_code}:${dataset.code}`}
+                        aria-pressed={isSelected}
+                        className={`flow-row ${isSelected ? 'flow-row-selected' : ''}`}
+                        onClick={() => selectDataset(dataset.code)}
                       >
-                        <span className="flex min-w-0 items-center gap-3 text-left">
-                          <input
-                            type="checkbox"
-                            className="checkbox"
-                            checked={isSelected}
-                            onChange={() => toggleSeries(series.series_code)}
-                          />
-                          <span className="min-w-0">
-                            <span className="block truncate text-sm font-semibold">
-                              {series.series_name}
-                            </span>
-                            <span className="mt-1 block truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
-                              {series.series_code}
-                            </span>
+                        <span className="min-w-0 text-left">
+                          <span className="block truncate text-sm font-semibold">
+                            {dataset.name}
+                          </span>
+                          <span className="mt-1 block truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
+                            {dataset.code}
+                            {dataset.nb_series != null
+                              ? ` · ${dataset.nb_series.toLocaleString()} series`
+                              : ''}
                           </span>
                         </span>
-                      </label>
+                        {isSelected ? (
+                          <Check className="shrink-0 text-blue-600" size={18} />
+                        ) : (
+                          <ChevronRight className="shrink-0 text-zinc-400" size={18} />
+                        )}
+                      </button>
                     )
                   })
                 ) : (
-                  <EmptyState message="No series match the current filters." />
+                  <EmptyState
+                    message={
+                      search ? `No datasets match “${search}”.` : 'No datasets are available.'
+                    }
+                  />
                 )}
               </div>
-              <p className="mb-4 text-xs text-zinc-500">
-                Showing {seriesItems.length.toLocaleString()} of {seriesNumFound.toLocaleString()}{' '}
-                series · {selectedSeriesCodes.length}/{MAX_SELECTED_SERIES} selected
-              </p>
+            </section>
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <label className="field-label">
-                  Start period <span className="font-normal text-zinc-400">(optional)</span>
-                  <input
-                    className="input mt-2"
-                    value={startPeriod}
-                    onChange={(event) => updatePeriod('start', event.target.value)}
-                    placeholder="e.g. 2020-01-01"
-                  />
-                </label>
-                <label className="field-label">
-                  End period <span className="font-normal text-zinc-400">(optional)</span>
-                  <input
-                    className="input mt-2"
-                    value={endPeriod}
-                    onChange={(event) => updatePeriod('end', event.target.value)}
-                    placeholder="e.g. 2024-12-31"
-                  />
-                </label>
-              </div>
-
-              <div className="mt-6 flex flex-col gap-4 rounded-2xl border border-blue-200 bg-blue-50/70 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-blue-900/60 dark:bg-blue-950/30">
-                <div>
-                  <p className="text-sm font-semibold">Query summary</p>
-                  <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
-                    {selectedSeriesCodes.length
-                      ? `${selectedSeriesCodes.length} series selected`
-                      : 'No series selected'}
-                    {' · '}
-                    {startPeriod || endPeriod
-                      ? `${startPeriod || 'earliest'} to ${endPeriod || 'latest'}`
-                      : 'All periods'}
-                  </p>
+            <section
+              aria-labelledby="series-heading"
+              className={`panel transition-opacity ${selectedDatasetCode ? '' : 'pointer-events-none opacity-50'}`}
+            >
+              <SectionHeading
+                number="03"
+                title="Select series"
+                description={
+                  selectedDataset
+                    ? `Filter and multi-select up to ${MAX_SELECTED_SERIES} series from ${selectedDataset.name}.`
+                    : 'Choose a dataset to browse its series.'
+                }
+                id="series-heading"
+              />
+              {isDatasetDetailLoading ? (
+                <div className="space-y-4" aria-label="Loading dataset detail">
+                  {[1, 2, 3].map((item) => (
+                    <div key={item} className="skeleton h-24" />
+                  ))}
                 </div>
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => void runPreview(1)}
-                  disabled={isPreviewLoading || !selectedSeriesCodes.length}
-                >
-                  {isPreviewLoading ? (
-                    <LoaderCircle className="animate-spin" size={17} />
-                  ) : (
-                    <Database size={17} />
-                  )}
-                  {isPreviewLoading ? 'Loading preview…' : 'Preview data'}
-                </button>
-              </div>
-            </>
-          ) : (
-            <EmptyState message="Select a dataset to load its series." />
-          )}
-        </section>
-
-        {preview && (
-          <section aria-labelledby="results-heading" className="panel mt-6">
-            <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <p className="section-number">Results</p>
-                <h2 id="results-heading" className="mt-1 text-xl font-semibold tracking-tight">
-                  Chart and data preview
-                </h2>
-                <p className="mt-1 text-sm text-zinc-500">
-                  {preview.total_rows.toLocaleString()} observation
-                  {preview.total_rows === 1 ? '' : 's'}
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <DownloadButton
-                  format="csv"
-                  isLoading={downloadingFormat === 'csv'}
-                  onClick={() => void download('csv')}
-                />
-                <DownloadButton
-                  format="json"
-                  isLoading={downloadingFormat === 'json'}
-                  onClick={() => void download('json')}
-                />
-              </div>
-            </div>
-
-            {chartOption && (
-              <div className="mb-5 overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
-                <ReactECharts
-                  option={chartOption}
-                  style={{ height: 360, width: '100%' }}
-                  notMerge
-                  lazyUpdate
-                />
-              </div>
-            )}
-
-            {preview.rows.length ? (
-              <>
-                <div className="relative z-10 max-h-[32rem] overflow-auto rounded-xl border border-zinc-200 dark:border-zinc-800">
-                  <table className="w-full border-collapse text-left text-sm">
-                    <thead className="sticky top-0 z-10 bg-zinc-100/95 backdrop-blur dark:bg-zinc-900/95">
-                      <tr>
-                        {preview.columns.map((column) => (
-                          <th key={column} scope="col" className="table-heading">
-                            {column}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-                      {preview.rows.map((row, rowIndex) => (
-                        <tr
-                          key={`${preview.page}-${rowIndex}`}
-                          className="transition-colors hover:bg-blue-50/50 dark:hover:bg-blue-950/20"
-                        >
-                          {preview.columns.map((column) => (
-                            <td key={column} className="table-cell">
-                              {formatCellValue(row[column])}
-                            </td>
-                          ))}
-                        </tr>
+              ) : datasetDetail ? (
+                <>
+                  {datasetDetail.dimensions.length > 0 && (
+                    <div className="mb-5 grid gap-4 lg:grid-cols-2">
+                      {datasetDetail.dimensions.map((dimension) => (
+                        <fieldset key={dimension.code} className="dimension-card">
+                          <legend className="w-full px-1">
+                            <span className="flex items-center justify-between gap-3">
+                              <span className="text-sm font-semibold">{dimension.label}</span>
+                              <span className="font-mono text-[11px] text-zinc-500">
+                                {dimension.code}
+                              </span>
+                            </span>
+                          </legend>
+                          <div className="mt-3 max-h-40 space-y-1 overflow-y-auto pr-1">
+                            {dimension.values.map((value) => {
+                              const isSelected =
+                                dimensionSelections[dimension.code]?.includes(value.code) ?? false
+                              return (
+                                <label key={value.code} className="code-option">
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    onChange={() => toggleDimensionCode(dimension.code, value.code)}
+                                    className="checkbox"
+                                  />
+                                  <span className="min-w-0 flex-1 truncate">{value.label}</span>
+                                  <span className="font-mono text-[11px] text-zinc-500">
+                                    {value.code}
+                                  </span>
+                                </label>
+                              )
+                            })}
+                          </div>
+                        </fieldset>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="mt-4 flex items-center justify-between gap-4">
-                  <p className="font-mono text-xs text-zinc-500">Page {preview.page}</p>
+                    </div>
+                  )}
+
+                  <label className="relative mb-4 block">
+                    <span className="sr-only">Search series</span>
+                    <Search
+                      className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400"
+                      size={17}
+                    />
+                    <input
+                      type="search"
+                      value={seriesSearch}
+                      onChange={(event) => {
+                        setSeriesSearch(event.target.value)
+                        setError('')
+                      }}
+                      placeholder="Search series by name or code…"
+                      className="input pl-10"
+                    />
+                  </label>
+
+                  <div
+                    className="relative z-20 mb-5 max-h-72 space-y-2 overflow-y-auto rounded-xl"
+                    data-testid="series-list"
+                  >
+                    {isSeriesLoading ? (
+                      [1, 2, 3].map((item) => <div key={item} className="skeleton h-14" />)
+                    ) : seriesItems.length ? (
+                      seriesItems.map((series) => {
+                        const isSelected = selectedSeriesCodes.includes(series.series_code)
+                        return (
+                          <label
+                            key={series.series_code}
+                            className={`flow-row cursor-pointer ${isSelected ? 'flow-row-selected' : ''}`}
+                          >
+                            <span className="flex min-w-0 items-center gap-3 text-left">
+                              <input
+                                type="checkbox"
+                                className="checkbox"
+                                checked={isSelected}
+                                onChange={() => toggleSeries(series.series_code)}
+                              />
+                              <span className="min-w-0">
+                                <span className="block truncate text-sm font-semibold">
+                                  {series.series_name}
+                                </span>
+                                <span className="mt-1 block truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
+                                  {series.series_code}
+                                </span>
+                              </span>
+                            </span>
+                          </label>
+                        )
+                      })
+                    ) : (
+                      <EmptyState message="No series match the current filters." />
+                    )}
+                  </div>
+                  <p className="mb-4 text-xs text-zinc-500">
+                    Showing {seriesItems.length.toLocaleString()} of{' '}
+                    {seriesNumFound.toLocaleString()} series · {selectedSeriesCodes.length}/
+                    {MAX_SELECTED_SERIES} selected
+                  </p>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <label className="field-label">
+                      Start period <span className="font-normal text-zinc-400">(optional)</span>
+                      <input
+                        className="input mt-2"
+                        value={startPeriod}
+                        onChange={(event) => updatePeriod('start', event.target.value)}
+                        placeholder="e.g. 2020-01-01"
+                      />
+                    </label>
+                    <label className="field-label">
+                      End period <span className="font-normal text-zinc-400">(optional)</span>
+                      <input
+                        className="input mt-2"
+                        value={endPeriod}
+                        onChange={(event) => updatePeriod('end', event.target.value)}
+                        placeholder="e.g. 2024-12-31"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="mt-6 flex flex-col gap-4 rounded-2xl border border-blue-200 bg-blue-50/70 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-blue-900/60 dark:bg-blue-950/30">
+                    <div>
+                      <p className="text-sm font-semibold">Query summary</p>
+                      <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+                        {selectedSeriesCodes.length
+                          ? `${selectedSeriesCodes.length} series selected`
+                          : 'No series selected'}
+                        {' · '}
+                        {startPeriod || endPeriod
+                          ? `${startPeriod || 'earliest'} to ${endPeriod || 'latest'}`
+                          : 'All periods'}
+                      </p>
+                      {syncMessage && (
+                        <p className="mt-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+                          {syncMessage}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => void syncToWarehouse()}
+                        disabled={isSyncing || !selectedSeriesCodes.length}
+                      >
+                        {isSyncing ? (
+                          <LoaderCircle className="animate-spin" size={15} />
+                        ) : (
+                          <Database size={15} />
+                        )}
+                        {isSyncing ? 'Syncing…' : 'Sync to Analytics DB'}
+                      </button>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() => void runPreview(1)}
+                        disabled={isPreviewLoading || !selectedSeriesCodes.length}
+                      >
+                        {isPreviewLoading ? (
+                          <LoaderCircle className="animate-spin" size={17} />
+                        ) : (
+                          <Database size={17} />
+                        )}
+                        {isPreviewLoading ? 'Loading preview…' : 'Preview data'}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <EmptyState message="Select a dataset to load its series." />
+              )}
+            </section>
+
+            {preview && (
+              <section aria-labelledby="results-heading" className="panel mt-6">
+                <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <p className="section-number">Results</p>
+                    <h2 id="results-heading" className="mt-1 text-xl font-semibold tracking-tight">
+                      Chart and data preview
+                    </h2>
+                    <p className="mt-1 text-sm text-zinc-500">
+                      {preview.total_rows.toLocaleString()} observation
+                      {preview.total_rows === 1 ? '' : 's'}
+                    </p>
+                  </div>
                   <div className="flex gap-2">
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      disabled={preview.page <= 1 || isPreviewLoading}
-                      onClick={() => void runPreview(preview.page - 1)}
-                    >
-                      <ArrowLeft size={15} /> Previous
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      disabled={!preview.has_next_page || isPreviewLoading}
-                      onClick={() => void runPreview(preview.page + 1)}
-                    >
-                      Next <ArrowRight size={15} />
-                    </button>
+                    <DownloadButton
+                      format="csv"
+                      isLoading={downloadingFormat === 'csv'}
+                      onClick={() => void download('csv')}
+                    />
+                    <DownloadButton
+                      format="json"
+                      isLoading={downloadingFormat === 'json'}
+                      onClick={() => void download('json')}
+                    />
                   </div>
                 </div>
-              </>
-            ) : (
-              <EmptyState message="This query returned no observations. Try broadening your filters." />
+
+                {chartOption && (
+                  <div className="mb-5 overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
+                    <ReactECharts
+                      option={chartOption}
+                      style={{ height: 360, width: '100%' }}
+                      notMerge
+                      lazyUpdate
+                    />
+                  </div>
+                )}
+
+                {preview.rows.length ? (
+                  <>
+                    <div className="relative z-10 max-h-[32rem] overflow-auto rounded-xl border border-zinc-200 dark:border-zinc-800">
+                      <table className="w-full border-collapse text-left text-sm">
+                        <thead className="sticky top-0 z-10 bg-zinc-100/95 backdrop-blur dark:bg-zinc-900/95">
+                          <tr>
+                            {preview.columns.map((column) => (
+                              <th key={column} scope="col" className="table-heading">
+                                {column}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                          {preview.rows.map((row, rowIndex) => (
+                            <tr
+                              key={`${preview.page}-${rowIndex}`}
+                              className="transition-colors hover:bg-blue-50/50 dark:hover:bg-blue-950/20"
+                            >
+                              {preview.columns.map((column) => (
+                                <td key={column} className="table-cell">
+                                  {formatCellValue(row[column])}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="mt-4 flex items-center justify-between gap-4">
+                      <p className="font-mono text-xs text-zinc-500">Page {preview.page}</p>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={preview.page <= 1 || isPreviewLoading}
+                          onClick={() => void runPreview(preview.page - 1)}
+                        >
+                          <ArrowLeft size={15} /> Previous
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={!preview.has_next_page || isPreviewLoading}
+                          onClick={() => void runPreview(preview.page + 1)}
+                        >
+                          Next <ArrowRight size={15} />
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <EmptyState message="This query returned no observations. Try broadening your filters." />
+                )}
+              </section>
             )}
-          </section>
+          </>
         )}
       </main>
       <footer className="mx-auto w-full max-w-7xl px-4 py-8 text-center text-xs text-zinc-500 sm:px-6 lg:px-8">
-        DBnomics Data Browser · Structured time series, ready to use
+        WorldEconomicData · Unified SDMX, DBnomics, Central Bank &amp; Market Intelligence
       </footer>
     </div>
   )

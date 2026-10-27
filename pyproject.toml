@@ -1,14 +1,19 @@
 [project]
-name = "dbnomics-data-browser"
+name = "world-economic-data"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
     "cachetools",
     "dbnomics",
+    "duckdb",
     "fastapi",
+    "google-genai",
     "httpx",
+    "mcp",
     "pandas",
     "pydantic-settings",
+    "requests",
+    "sdmx1",
     "uvicorn",
 ]
 
@@ -44,6 +49,6 @@ plugins = ["pydantic.mypy"]
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = ["cachetools.*", "dbnomics.*", "pandas.*"]
+module = ["cachetools.*", "dbnomics.*", "duckdb.*", "google.*", "mcp.*", "mlx_lm.*", "pandas.*", "sdmx.*"]
 ignore_missing_imports = true
 follow_untyped_imports = false

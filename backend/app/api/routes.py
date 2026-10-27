@@ -19,7 +19,10 @@ from app.models import (
     QueryRequest,
     SeriesPage,
 )
-from app.services.dbnomics_service import DBnomicsService
+from app.services.composite_catalog_service import (
+    CompositeCatalogService,
+    build_default_composite_catalog,
+)
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
@@ -27,18 +30,29 @@ router = APIRouter()
 
 
 @lru_cache
-def get_dbnomics_service() -> DBnomicsService:
-    return DBnomicsService(get_settings())
+def get_dbnomics_service() -> CompositeCatalogService:
+    return build_default_composite_catalog(get_settings())
 
 
-ServiceDependency = Annotated[DBnomicsService, Depends(get_dbnomics_service)]
+ServiceDependency = Annotated[CompositeCatalogService, Depends(get_dbnomics_service)]
 SettingsDependency = Annotated[Settings, Depends(get_settings)]
 DownloadFormatParameter = Annotated[DownloadFormat, Query(alias="format")]
 
 
 @router.get("/providers", response_model=list[Provider])
-def list_providers(service: ServiceDependency) -> list[Provider]:
-    return service.list_providers()
+def list_providers(
+    service: ServiceDependency,
+    source_type: str | None = Query(default=None, max_length=50),
+) -> list[Provider]:
+    providers = service.list_providers()
+    if not source_type or not source_type.strip():
+        return providers
+    normalized = source_type.strip().casefold()
+    return [
+        p
+        for p in providers
+        if (getattr(p, "source_type", None) or "dbnomics").casefold() == normalized
+    ]
 
 
 @router.get("/providers/{provider_code}", response_model=Provider)

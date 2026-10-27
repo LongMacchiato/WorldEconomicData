@@ -15,6 +15,8 @@ class Provider(BaseModel):
     name: str
     region: str | None = None
     website: str | None = None
+    source_type: str = "dbnomics"
+    requires_api_key: bool = False
 
 
 class Dataset(BaseModel):

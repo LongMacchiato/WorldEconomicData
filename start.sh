@@ -81,6 +81,7 @@ start_backend() {
   echo "Starting API on http://${API_HOST}:${API_PORT} ..."
   "${VENV_PYTHON}" -m uvicorn app.main:app \
     --app-dir backend \
+    --reload-dir backend \
     --host "${API_HOST}" \
     --port "${API_PORT}" \
     --reload &

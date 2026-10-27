@@ -1,10 +1,13 @@
 from collections.abc import Awaitable, Callable
 
+from app.api.analytics_routes import analytics_router
+from app.api.macro_routes import macro_router
 from app.api.routes import router
 from app.config import get_settings
 from app.exceptions import (
     DatasetNotFoundError,
     DBnomicsBrowserError,
+    InvalidAnalyticsQueryError,
     ProviderNotFoundError,
     ResultLimitExceededError,
     SeriesNotFoundError,
@@ -17,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 settings = get_settings()
-app = FastAPI(title="DBnomics Data Browser API", version="1.0.0")
+app = FastAPI(title="WorldEconomicData API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_origins),
@@ -27,6 +30,8 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 app.include_router(router, prefix="/api")
+app.include_router(analytics_router, prefix="/api/analytics")
+app.include_router(macro_router, prefix="/api/macro")
 
 
 @app.get("/health")
@@ -69,6 +74,10 @@ app.add_exception_handler(
 app.add_exception_handler(
     ResultLimitExceededError,
     _error_handler(413, "result_limit_exceeded"),
+)
+app.add_exception_handler(
+    InvalidAnalyticsQueryError,
+    _error_handler(422, "invalid_analytics_query"),
 )
 
 

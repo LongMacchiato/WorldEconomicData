@@ -24,3 +24,7 @@ class UpstreamResponseError(DBnomicsBrowserError):
 
 class ResultLimitExceededError(DBnomicsBrowserError):
     pass
+
+
+class InvalidAnalyticsQueryError(DBnomicsBrowserError):
+    """Raised when a custom SQL or analytical transformation request is invalid."""

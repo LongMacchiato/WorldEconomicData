@@ -1,19 +1,30 @@
 import axios, { AxiosError } from 'axios'
 import type {
+  AiChatRequest,
+  AiChatResponse,
+  AiConfigStatus,
+  AiConfigUpdateRequest,
+  AnalyticsQueryResult,
+  AnalyticsTransformRequest,
   Dataset,
   DatasetDetail,
   DimensionSelections,
   DownloadFormat,
+  MacroDashboardStatus,
   Provider,
   QueryPreview,
   QueryRequest,
   SeriesPage,
+  SyncRequest,
+  SyncRunSummary,
+  WarehouseSummary,
 } from './types'
 
 // In dev, Vite proxies /api to the backend (see vite.config.ts).
 // Set VITE_API_BASE_URL when the API is hosted elsewhere (e.g. production).
 const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '',
+  timeout: 90_000,
   headers: { Accept: 'application/json' },
 })
 
@@ -126,6 +137,81 @@ export function saveBlob(blob: Blob, filename: string): void {
   anchor.click()
   anchor.remove()
   URL.revokeObjectURL(objectUrl)
+}
+
+export async function getAnalyticsCatalog(signal?: AbortSignal): Promise<WarehouseSummary> {
+  const response = await apiClient.get<WarehouseSummary>('/api/analytics/catalog', { signal })
+  return response.data
+}
+
+export async function syncSeriesToAnalytics(
+  request: SyncRequest,
+  signal?: AbortSignal,
+): Promise<SyncRunSummary> {
+  const response = await apiClient.post<SyncRunSummary>('/api/analytics/sync', request, { signal })
+  return response.data
+}
+
+export async function deleteStoredSeries(seriesId: string, signal?: AbortSignal): Promise<void> {
+  await apiClient.delete(`/api/analytics/series/${seriesId}`, { signal })
+}
+
+export async function runAnalyticsTransform(
+  request: AnalyticsTransformRequest,
+  signal?: AbortSignal,
+): Promise<AnalyticsQueryResult> {
+  const response = await apiClient.post<AnalyticsQueryResult>('/api/analytics/transform', request, {
+    signal,
+  })
+  return response.data
+}
+
+export async function runAnalyticsSql(
+  sql: string,
+  limit = 500,
+  signal?: AbortSignal,
+): Promise<AnalyticsQueryResult> {
+  const response = await apiClient.post<AnalyticsQueryResult>(
+    '/api/analytics/sql',
+    { sql, limit },
+    { signal },
+  )
+  return response.data
+}
+
+export async function sendAiChatMessage(
+  request: AiChatRequest,
+  signal?: AbortSignal,
+): Promise<AiChatResponse> {
+  const response = await apiClient.post<AiChatResponse>('/api/analytics/ai/chat', request, {
+    signal,
+  })
+  return response.data
+}
+
+export async function getAiConfig(signal?: AbortSignal): Promise<AiConfigStatus> {
+  const response = await apiClient.get<AiConfigStatus>('/api/analytics/ai/config', { signal })
+  return response.data
+}
+
+export async function updateAiConfig(
+  request: AiConfigUpdateRequest,
+  signal?: AbortSignal,
+): Promise<AiConfigStatus> {
+  const response = await apiClient.put<AiConfigStatus>('/api/analytics/ai/config', request, {
+    signal,
+  })
+  return response.data
+}
+
+export async function getMacroDashboardStatus(signal?: AbortSignal): Promise<MacroDashboardStatus> {
+  const response = await apiClient.get<MacroDashboardStatus>('/api/macro/status', { signal })
+  return response.data
+}
+
+export async function refreshMacroDashboard(signal?: AbortSignal): Promise<MacroDashboardStatus> {
+  const response = await apiClient.post<MacroDashboardStatus>('/api/macro/refresh', {}, { signal })
+  return response.data
 }
 
 export function getErrorMessage(error: unknown): string {

@@ -35,6 +35,12 @@ class FakeService:
 
     def list_providers(self) -> list[Provider]:
         return [
+            Provider(
+                code="SDMX_ABS",
+                name="Australian Bureau of Statistics",
+                region="Australia",
+                source_type="sdmx",
+            ),
             Provider(code="ECB", name="European Central Bank", region="Europe"),
             Provider(code="IMF", name="International Monetary Fund", region="World"),
         ]
@@ -166,7 +172,15 @@ def test_health_and_providers(client: TestClient) -> None:
     response = client.get("/api/providers")
     assert response.status_code == 200
     codes = [provider["code"] for provider in response.json()]
-    assert codes == ["ECB", "IMF"]
+    assert codes == ["SDMX_ABS", "ECB", "IMF"]
+
+    sdmx_only = client.get("/api/providers?source_type=sdmx")
+    assert sdmx_only.status_code == 200
+    assert [p["code"] for p in sdmx_only.json()] == ["SDMX_ABS"]
+
+    dbnomics_only = client.get("/api/providers?source_type=dbnomics")
+    assert dbnomics_only.status_code == 200
+    assert [p["code"] for p in dbnomics_only.json()] == ["ECB", "IMF"]
 
 
 def test_datasets_search_and_detail(
